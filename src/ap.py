@@ -91,7 +91,8 @@ def make_beacon_ies(ssid_name, channel):
         ID="Country", info=(b"US" + env + first_channel + num_channel + power)
     )
 
-    rates = [0x0C]  # 6mbps only for now [0x82, 0x84, 0x0b, 0x16]
+    # rates = [0x0C]  # 6mbps only for now [0x82, 0x84, 0x0b, 0x16]
+    rates = [0x82, 0x84, 0x0b, 0x16]
     AP_RATES = bytes(rates)
 
     BEACON_IES = (
