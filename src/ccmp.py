@@ -1,8 +1,12 @@
-import hashlib, hmac
+import binascii
+import hashlib
+import hmac
+
 from scapy.fields import *
 from scapy.layers.dot11 import *
-import binascii
+
 import pyaes
+
 
 def pad_key_data(plain):
     pad_len = len(plain) % 8
@@ -76,6 +80,7 @@ def dot11_is_encrypted_data(p):
         or Dot11Encrypted in p
     )
 
+
 def payload_to_iv(payload):
     iv0 = payload[0]
     iv1 = payload[1]
@@ -107,8 +112,10 @@ def dot11_get_iv(p):
 def is_broadcast(ether):
     return ether == "ff:ff:ff:ff:ff:ff"
 
+
 def is_multicast(ether):
     return int(ether[0:2], 16) & 0x1 == 1
+
 
 ### CCMP wrapper. See RFC 3610
 class CCMPCrypto:
@@ -191,6 +198,7 @@ class CCMPCrypto:
         assert verified
         return True
 
+
 def aes_wrap(kek, plain):
     n = len(plain) // 8
     a = 0xA6A6A6A6A6A6A6A6
@@ -203,20 +211,22 @@ def aes_wrap(kek, plain):
             r[i - 1] = b[8:]
     return struct.pack(">Q", a) + b"".join(r)
 
+
 def aes_unwrap(kek, wrapped):
     n = (len(wrapped) // 8) - 1
-    #NOTE: R[0] is never accessed, left in for consistency with RFC indices
-    r = [None] + [wrapped[i * 8:i * 8 + 8] for i in range(1, n + 1)]
+    # NOTE: R[0] is never accessed, left in for consistency with RFC indices
+    r = [None] + [wrapped[i * 8 : i * 8 + 8] for i in range(1, n + 1)]
     a = struct.unpack(">Q", wrapped[:8])[0]
     decrypt = pyaes.AESModeOfOperationECB(kek).decrypt
-    for j in range(5, -1, -1):  #counting down
-        for i in range(n, 0, -1):  #(n, n-1, ..., 1)
+    for j in range(5, -1, -1):  # counting down
+        for i in range(n, 0, -1):  # (n, n-1, ..., 1)
             ciphertext = struct.pack(">Q", a ^ (n * j + i)) + r[i]
             B = decrypt(ciphertext)
             a = struct.unpack(">Q", B[:8])[0]
             r[i] = B[8:]
-    assert(a == 0xA6A6A6A6A6A6A6A6)
+    assert a == 0xA6A6A6A6A6A6A6A6
     return b"".join(r[1:])
+
 
 def customPRF512(key, amac, smac, anonce, snonce):
     """Source https://stackoverflow.com/questions/12018920/"""
