@@ -326,7 +326,7 @@ class AP:
     def __init__(
         self, ssid, psk, mac=None, mode="stdio", iface="wlan0", iface2="", channel=1
     ):
-        self.wpa = False
+        self.wpa = True
         self.ap_ip = "10.0.0.1"
         self.eapol_ready = False
         self.channel = channel
@@ -374,8 +374,10 @@ class AP:
         """Handle ARP data"""
         receiver_ip = packet[ARP].psrc
         receiver_mac = packet[ARP].hwsrc
-        bssid = packet.getlayer(Dot11).addr1
-        bss = self.bssids[bssid]
+
+        if bssid is None:
+            bssid = packet.getlayer(Dot11).addr1
+            bss = self.bssids[bssid]
 
         arp_response = Ether() / scapy.layers.l2.ARP(
             psrc=self.ap_ip,
@@ -412,9 +414,11 @@ class AP:
         if packet[DNS].qd is None:
             return
 
-        client_mac = packet[Dot11].addr2
-        bssid = packet.getlayer(Dot11).addr1
-        bss = self.bssids[bssid]
+        if bssid is None:
+            client_mac = packet[Dot11].addr2
+            bssid = packet.getlayer(Dot11).addr1
+            bss = self.bssids[bssid]
+
         receiver_ip = packet[IP].src
 
         dns_response = (
@@ -464,8 +468,10 @@ class AP:
         client_mac = packet[BOOTP].chaddr[:6]
         xid = packet[BOOTP].xid
         client_ip = "10.0.0.2"
-        bssid = packet.getlayer(Dot11).addr1
-        bss = self.bssids[bssid]
+
+        if bssid is None:
+            bssid = packet.getlayer(Dot11).addr1
+            bss = self.bssids[bssid]
 
         if packet[DHCP].options[0][1] == 1:
             dhcp_offer = (
@@ -754,7 +760,7 @@ class AP:
         bss = self.bssids[bssid]
 
         if sta not in bss.stations:
-            printd("bss %s does not know station  %s" % (bss, sta))
+            printd(f"bss {bss} does not know station {sta}")
             return
 
         if not bss.stations[sta].eapol_ready:
@@ -814,6 +820,7 @@ class AP:
             self.sendp(deauth, verbose=False)
             del bss.stations[sta]
             return
+
         bss.stations[sta].eapol_ready = False
         t1 = time.time()
         stat.KEY_IV = bytes([0 for i in range(16)])
