@@ -92,7 +92,7 @@ def make_beacon_ies(ssid_name, channel):
     )
 
     # rates = [0x0C]  # 6mbps only for now [0x82, 0x84, 0x0b, 0x16]
-    rates = [0x82, 0x84, 0x0b, 0x16]
+    rates = [0x82, 0x84, 0x0B, 0x16]
     AP_RATES = bytes(rates)
 
     BEACON_IES = (
@@ -326,6 +326,7 @@ class AP:
     def __init__(
         self, ssid, psk, mac=None, mode="stdio", iface="wlan0", iface2="", channel=1
     ):
+        self.wpa = False
         self.ap_ip = "10.0.0.1"
         self.eapol_ready = False
         self.channel = channel
@@ -372,7 +373,9 @@ class AP:
     def handle_arp(self, bssid, packet: Packet):
         """Handle ARP data"""
         receiver_ip = packet[ARP].psrc
-        receiver_mac = packet[Ether].src
+        receiver_mac = packet[ARP].hwsrc
+        bssid = packet.getlayer(Dot11).addr1
+        bss = self.bssids[bssid]
 
         arp_response = Ether() / scapy.layers.l2.ARP(
             psrc=self.ap_ip,
@@ -382,7 +385,25 @@ class AP:
             hwdst=receiver_mac,
         )
 
-        self.enc_send(self.bssids[bssid], packet[Ether].src, arp_response)
+        if self.wpa:
+            self.enc_send(self.bssids[bssid], packet[Ether].src, arp_response)
+        else:
+            arp_response = arp_response[1]  # Remove the Ethernet
+            arp_response = (
+                self.get_radiotap_header()
+                / Dot11(
+                    type="Data",
+                    FCfield="from-DS",
+                    addr1=receiver_mac,
+                    addr2=bss.mac,
+                    addr3=bss.mac,
+                    SC=bss.next_sc(),
+                )
+                / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
+                / SNAP(OUI=0x000000, code=scapy.data.ETH_P_ARP)
+                / arp_response
+            )
+            self.sendp(arp_response)
 
         return
 
@@ -391,6 +412,9 @@ class AP:
         if packet[DNS].qd is None:
             return
 
+        client_mac = packet[Dot11].addr2
+        bssid = packet.getlayer(Dot11).addr1
+        bss = self.bssids[bssid]
         receiver_ip = packet[IP].src
 
         dns_response = (
@@ -413,7 +437,25 @@ class AP:
             )
         )
 
-        self.enc_send(self.bssids[bssid], packet[Ether].src, dns_response)
+        if self.wpa:
+            self.enc_send(self.bssids[bssid], packet[Ether].src, dns_response)
+        else:
+            dns_response = dns_response[1]  # Remove the Ethernet
+            dns_response = (
+                self.get_radiotap_header()
+                / Dot11(
+                    type="Data",
+                    FCfield="from-DS",
+                    addr1=client_mac,
+                    addr2=bss.mac,
+                    addr3=bss.mac,
+                    SC=bss.next_sc(),
+                )
+                / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
+                / SNAP(OUI=0x000000, code=scapy.data.ETH_P_IP)
+                / dns_response
+            )
+            self.sendp(dns_response)
 
         return
 
@@ -422,10 +464,12 @@ class AP:
         client_mac = packet[BOOTP].chaddr[:6]
         xid = packet[BOOTP].xid
         client_ip = "10.0.0.2"
+        bssid = packet.getlayer(Dot11).addr1
+        bss = self.bssids[bssid]
 
         if packet[DHCP].options[0][1] == 1:
             dhcp_offer = (
-                Ether()
+                Ether(dst=client_mac, src=self.mac)
                 / IP(src=self.ap_ip, dst=client_ip)
                 / UDP(sport=67, dport=68)
                 / BOOTP(
@@ -440,7 +484,28 @@ class AP:
                 / DHCP(options=[("subnet_mask", "255.255.255.0")])
                 / DHCP(options=[("server_id", self.ap_ip), "end"])
             )
-            self.enc_send(self.bssids[bssid], packet[Ether].src, dhcp_offer)
+
+            if self.wpa:
+                self.enc_send(self.bssids[bssid], packet[Ether].src, dhcp_offer)
+            else:
+                dhcp_offer = dhcp_offer[1]  # Remove the Ethernet
+                dhcp_offer = (
+                    self.get_radiotap_header()
+                    / Dot11(
+                        type="Data",
+                        FCfield="from-DS",
+                        addr1=client_mac,
+                        addr2=bss.mac,
+                        addr3=bss.mac,
+                        SC=bss.next_sc(),
+                    )
+                    / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
+                    / SNAP(OUI=0x000000, code=scapy.data.ETH_P_IP)
+                    / dhcp_offer
+                )
+
+                self.sendp(dhcp_offer)
+
             return
 
         if packet[DHCP].options[0][1] == 3:
@@ -465,8 +530,46 @@ class AP:
                 / DHCP(options=[("domain", "localdomain")])
                 / DHCP(options=["end"])
             )
-            self.enc_send(self.bssids[bssid], packet[Ether].src, dhcp_ack)
+
+            if self.wpa:
+                self.enc_send(self.bssids[bssid], packet[Ether].src, dhcp_ack)
+            else:
+                dhcp_ack = dhcp_ack[1]  # Remove the Ethernet
+                dhcp_ack = (
+                    self.get_radiotap_header()
+                    / Dot11(
+                        type="Data",
+                        FCfield="from-DS",
+                        addr1=client_mac,
+                        addr2=bss.mac,
+                        addr3=bss.mac,
+                        SC=bss.next_sc(),
+                    )
+                    / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
+                    / SNAP(OUI=0x000000, code=scapy.data.ETH_P_IP)
+                    / dhcp_ack
+                )
+                sendp(dhcp_ack, iface=self.iface)
+
             return
+
+    def handle_data_packet(self, bssid, packet):
+        """handle_data_packet"""
+        # print(f"Handling: {packet}")
+
+        if BOOTP in packet:
+            self.handle_bootp(bssid, packet)
+            return True
+
+        if ARP in packet:
+            self.handle_arp(bssid, packet)
+            return True
+
+        if IP in packet and DNS in packet:
+            self.handle_dns(bssid, packet)
+            return True
+
+        return False
 
     def recv_pkt(self, packet):
         if hasattr(packet, "addr1"):
@@ -482,7 +585,7 @@ class AP:
             if len(packet.notdecoded[8:9]) > 0:  # Driver sent radiotap header flags
                 # This means it doesn't drop packets with a bad FCS itself
                 flags = ord(packet.notdecoded[8:9])
-                print(packet)
+
                 if flags & 64 != 0:  # BAD_FCS flag is set
                     # Print a warning if we haven't already discovered this MAC
                     if not packet.addr2 is None:
@@ -492,6 +595,10 @@ class AP:
                         )
                     # Drop this packet
                     return
+
+            # if Dot11Beacon not in packet:
+            #     # Beacons are noisy
+            #     print(f"Incoming: {packet}")
 
             if EAPOL in packet:
                 self.create_eapol_3(packet)
@@ -512,18 +619,7 @@ class AP:
                         # self.tunnel.write(decrypted)
                         # printd("write to %s from %s" % (bssid, sta))
 
-                        print(f"Received: {decrypted}")
-
-                        if BOOTP in decrypted:
-                            self.handle_bootp(bssid, decrypted)
-                            return
-
-                        if ARP in decrypted:
-                            self.handle_arp(bssid, decrypted)
-                            return
-
-                        if IP in decrypted and DNS in decrypted:
-                            self.handle_dns(bssid, decrypted)
+                        if self.handle_data_packet(bssid, decrypted):
                             return
 
                         self.bssids[bssid].network.write(
@@ -538,6 +634,12 @@ class AP:
                 # code.interact(local=locals())
                 # not parsed ;-), could be AWDL
                 return
+
+            # Data
+            if packet.type == DOT11_TYPE_DATA:
+                print(f"DATA Packet: {packet}")
+                if self.handle_data_packet(None, packet):
+                    return
 
             # Management
             if packet.type == DOT11_TYPE_MANAGEMENT:
@@ -595,11 +697,15 @@ class AP:
                 SC=self.bssids[bssid].next_sc(),
             )
             / Dot11ProbeResp(
-                timestamp=self.current_timestamp(), beacon_interval=0x0064, cap=0x3101
+                timestamp=self.current_timestamp(),
+                beacon_interval=0x0064,
+                cap="res8+ESS+short-preamble",  # 0x3101
             )
             / make_beacon_ies(ssid, self.channel)
         )
-        probe_response_packet = probe_response_packet / RSN
+        if self.wpa:
+            probe_response_packet[Dot11ProbeResp].cap += "privacy"
+            probe_response_packet /= RSN
 
         self.sendp(probe_response_packet, verbose=False)
 
@@ -824,6 +930,7 @@ class AP:
         self.sendp(stat.m1_packet, verbose=False)
 
     def dot11_assoc_resp(self, packet, sta, reassoc):
+        """dot11_assoc_resp"""
         bssid = packet.addr1
         bss = self.bssids[bssid]
         if sta not in bss.stations:
@@ -854,14 +961,18 @@ class AP:
                 addr3=bssid,
                 SC=bss.next_sc(),
             )
-            / Dot11AssoResp(cap=0x3101, status=0, AID=bss.next_aid())
+            / Dot11AssoResp(cap="res8+ESS+short-preamble", status=0, AID=bss.next_aid())
             / make_beacon_ies(self.ssids()[0], self.channel)
         )
+
+        if self.wpa:
+            assoc_packet[Dot11AssoResp].cap += "privacy"
 
         printd("Sending Association Response (0x01)...")
         self.prepare_message_1(bssid, sta)
         self.sendp(assoc_packet, verbose=False)
-        self.create_message_1(bssid, sta)
+        if self.wpa:
+            self.create_message_1(bssid, sta)
 
     def decrypt(self, bssid, sta, packet):
         if bssid not in self.bssids:
@@ -870,7 +981,7 @@ class AP:
         # ccmp = packet[Dot11CCMP]
         # pn = ccmp_pn(ccmp)
         if sta not in bss.stations:
-            printd("[-] Unknown station %s" % sta)
+            printd(f"[-] Unknown station {sta}")
             deauth = (
                 self.get_radiotap_header()
                 / Dot11(addr1=sta, addr2=bssid, addr3=bssid)
@@ -895,19 +1006,22 @@ class AP:
     def enc_send(self, bss, sta, packet):
         """enc_send"""
         key_idx = 0
+
         if is_multicast(sta) or is_broadcast(sta):
             if len(bss.GTK) == 0:
                 return
-            # printd("sending broadcast/multicast")
+            # printd("Sending broadcast/multicast")
             key_idx = 1
         elif sta not in bss.stations or not bss.stations[sta].associated:
-            printd("[-] Invalid station %s for enc_send" % sta)
+            printd(f"[-] Invalid station {sta} for enc_send")
             return
+
         x = self.get_radiotap_header()
         # print("send", packet)
         y = self.encrypt(bss, sta, packet, key_idx)
         if not y:
             raise Exception("wtfbbq")
+
         new_packet = x / y
         # printd(new_packet.show(dump=1))
         # print("send CCMP", key_idx, new_packet)
@@ -990,11 +1104,13 @@ class AP:
         beacon_packet = (
             self.get_radiotap_header()
             / Dot11(subtype=8, addr1="ff:ff:ff:ff:ff:ff", addr2=bssid, addr3=bssid)
-            / Dot11Beacon(cap=0x3101)
+            / Dot11Beacon(cap="res8+ESS+short-preamble")
             / make_beacon_ies(ssid, self.channel)
         )
 
-        beacon_packet = beacon_packet / RSN
+        if self.wpa:
+            beacon_packet[Dot11Beacon].cap += "privacy"
+            beacon_packet /= RSN
 
         # Update timestamp
         beacon_packet[Dot11Beacon].timestamp = self.current_timestamp()
