@@ -35,9 +35,11 @@ from scapy.layers.l2 import LLC, SNAP, ARP
 from scapy.layers.dhcp import BOOTP, DHCP
 from scapy.layers.dns import *
 
-# You can use this to debug SCAPY 'crashes'
-# from scapy.config import conf
-# conf.debug_dissector = 2
+# You can use this to debug SCAPY 'crashes' with:
+#  Socket <scapy.arch.linux.L2ListenSocket object at 0x7f9a188407c0> failed with 'Layer [DHCP] not found'. It was closed.
+from scapy.config import conf
+
+conf.debug_dissector = 2
 
 from ccmp import *
 from fakenet import ScapyNetwork
@@ -443,6 +445,55 @@ class AP:
 
         return
 
+    def handle_icmp(self, bssid, packet: Packet):
+        """Handle ICMP data"""
+        if bssid is None:
+            client_mac = packet[Dot11].addr2
+            bssid = packet.getlayer(Dot11).addr1
+            if bssid not in self.bssids:
+                # We don't info on this BSS
+                return
+            bss = self.bssids[bssid]
+
+        if packet[ICMP].type != 8:  # echo-request:
+            return
+
+        receiver_ip = packet[IP].src
+
+        icmp_response = (
+            # Fill these dst/src of Ether fields, so that SCAPY knows how to send it - instead of guessing
+            #  and then writing that it cannot route the data, because there is no 10.0.0.1 network
+            #  on this computer
+            Ether(dst=packet[Ether].src, src=packet[Ether].dst)
+            / IP(src=packet[IP].dst, dst=receiver_ip)
+            / ICMP(type="echo-reply", id=packet[ICMP].id, seq=packet[ICMP].seq)
+            / Raw(load=packet[Raw].load)
+        )
+
+        # print(f"Sending a ICMP response for incoming: {packet}")
+        if self.wpa:
+            self.enc_send(self.bssids[bssid], packet[Ether].src, icmp_response)
+        else:
+            icmp_response = icmp_response[1]  # Remove the Ethernet
+            icmp_response = (
+                self.get_radiotap_header()
+                / Dot11(
+                    type="Data",
+                    FCfield="from-DS",
+                    addr1=client_mac,
+                    addr2=bss.mac,
+                    addr3=bss.mac,
+                    SC=bss.next_sc(),
+                )
+                / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
+                / SNAP(OUI=0x000000, code=scapy.data.ETH_P_IP)
+                / icmp_response
+            )
+            self.sendp(icmp_response)
+        # print("Done")
+
+        return
+
     def handle_dns(self, bssid, packet: Packet):
         """Handle DNS data"""
         if packet[DNS].qd is None:
@@ -451,16 +502,25 @@ class AP:
         if bssid is None:
             client_mac = packet[Dot11].addr2
             bssid = packet.getlayer(Dot11).addr1
+            if bssid not in self.bssids:
+                # We don't info on this BSS
+                return
             bss = self.bssids[bssid]
 
         receiver_ip = packet[IP].src
+        if "224.0.0." in packet[IP].dst:
+            # This is mDNS
+            return
 
         if len(packet[DNS].qd) == 0:
             # Not a query we can handle
             return
 
         dns_response = (
-            Ether()
+            # Fill these dst/src of Ether fields, so that SCAPY knows how to send it - instead of guessing
+            #  and then writing that it cannot route the data, because there is no 10.0.0.1 network
+            #  on this computer
+            Ether(dst=packet[Ether].src, src=packet[Ether].dst)
             / IP(src=self.ap_ip, dst=receiver_ip)
             / UDP(sport=53, dport=packet[UDP].sport)
             / DNS(
@@ -479,6 +539,7 @@ class AP:
             )
         )
 
+        # print(f"Sending a DNS response for incoming: {packet}")
         if self.wpa:
             self.enc_send(self.bssids[bssid], packet[Ether].src, dns_response)
         else:
@@ -498,6 +559,7 @@ class AP:
                 / dns_response
             )
             self.sendp(dns_response)
+        # print("Done")
 
         return
 
@@ -509,10 +571,17 @@ class AP:
 
         if bssid is None:
             bssid = packet.getlayer(Dot11).addr1
+            if bssid not in self.bssids:
+                # We don't info on this BSS
+                return
             bss = self.bssids[bssid]
 
+        if DHCP not in packet:
+            # Not a valid DHCP packet
+            return
+
         if packet[DHCP].options[0][1] == 1:
-            dhcp_offer = (
+            dhcp_response = (
                 Ether(dst=client_mac, src=self.mac)
                 / IP(src=self.ap_ip, dst=client_ip)
                 / UDP(sport=67, dport=68)
@@ -528,33 +597,9 @@ class AP:
                 / DHCP(options=[("subnet_mask", "255.255.255.0")])
                 / DHCP(options=[("server_id", self.ap_ip), "end"])
             )
-
-            if self.wpa:
-                self.enc_send(self.bssids[bssid], packet[Ether].src, dhcp_offer)
-            else:
-                dhcp_offer = dhcp_offer[1]  # Remove the Ethernet
-                dhcp_offer = (
-                    self.get_radiotap_header()
-                    / Dot11(
-                        type="Data",
-                        FCfield="from-DS",
-                        addr1=client_mac,
-                        addr2=bss.mac,
-                        addr3=bss.mac,
-                        SC=bss.next_sc(),
-                    )
-                    / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
-                    / SNAP(OUI=0x000000, code=scapy.data.ETH_P_IP)
-                    / dhcp_offer
-                )
-
-                self.sendp(dhcp_offer)
-
-            return
-
-        if packet[DHCP].options[0][1] == 3:
-            dhcp_ack = (
-                Ether()
+        elif packet[DHCP].options[0][1] == 3:
+            dhcp_response = (
+                Ether(dst=client_mac, src=self.mac)
                 / IP(src=self.ap_ip, dst=client_ip)
                 / UDP(sport=67, dport=68)
                 / BOOTP(
@@ -574,28 +619,33 @@ class AP:
                 / DHCP(options=[("domain", "localdomain")])
                 / DHCP(options=["end"])
             )
-
-            if self.wpa:
-                self.enc_send(self.bssids[bssid], packet[Ether].src, dhcp_ack)
-            else:
-                dhcp_ack = dhcp_ack[1]  # Remove the Ethernet
-                dhcp_ack = (
-                    self.get_radiotap_header()
-                    / Dot11(
-                        type="Data",
-                        FCfield="from-DS",
-                        addr1=client_mac,
-                        addr2=bss.mac,
-                        addr3=bss.mac,
-                        SC=bss.next_sc(),
-                    )
-                    / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
-                    / SNAP(OUI=0x000000, code=scapy.data.ETH_P_IP)
-                    / dhcp_ack
-                )
-                sendp(dhcp_ack, iface=self.iface)
-
+        else:
+            # Not handled by us
             return
+
+        # print(f"Sending a DHCP response for incoming: {packet}")
+        if self.wpa:
+            self.enc_send(self.bssids[bssid], packet[Ether].src, dhcp_response)
+        else:
+            dhcp_response = dhcp_response[1]  # Remove the Ethernet
+            dhcp_response = (
+                self.get_radiotap_header()
+                / Dot11(
+                    type="Data",
+                    FCfield="from-DS",
+                    addr1=client_mac,
+                    addr2=bss.mac,
+                    addr3=bss.mac,
+                    SC=bss.next_sc(),
+                )
+                / LLC(dsap=0xAA, ssap=0xAA, ctrl=0x03)
+                / SNAP(OUI=0x000000, code=scapy.data.ETH_P_IP)
+                / dhcp_response
+            )
+            sendp(dhcp_response, iface=self.iface)
+        # print("Done")
+
+        return
 
     def handle_data_packet(self, bssid, packet):
         """handle_data_packet"""
@@ -611,6 +661,10 @@ class AP:
 
         if IP in packet and DNS in packet:
             self.handle_dns(bssid, packet)
+            return True
+
+        if IP in packet and ICMP in packet:
+            self.handle_icmp(bssid, packet)
             return True
 
         return False
@@ -779,7 +833,7 @@ class AP:
         )
 
         printd(
-            "Sending Authentication to %s from %s (0x0B)..." % (receiver, bssid),
+            f"Sending Authentication to {receiver} from {bssid} (0x0B)...",
             Level.DEBUG,
         )
         self.sendp(auth_packet, verbose=False)
