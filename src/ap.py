@@ -86,8 +86,15 @@ RSN = eRSN.build()
 def make_beacon_ies(ssid_name, channel):
     # tbd hm
     # ht_caps = Dot11EltHTCapabilities()
-    ##ht_info = Dot11Elt(ID=61, info=(b"\x0b\x08\x05\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"))
-    # extcaps = Dot11Elt(ID='ExtendedCapatibilities', info=(b"\x01\x10\x08\x00\x00\x00\x00\x00"))
+    # ht_info = Dot11Elt(
+    #     ID="HT Operation",
+    #     info=(
+    #         b"\x0b\x08\x05\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    #     ),
+    # )
+    # extcaps = Dot11Elt(
+    #     ID="ExtendedCapatibilities", info=(b"\x01\x10\x08\x00\x00\x00\x00\x00")
+    # )
 
     env = b"\x20"  # all environments
     first_channel = bytes([channel])
@@ -97,15 +104,15 @@ def make_beacon_ies(ssid_name, channel):
         ID="Country", info=(b"US" + env + first_channel + num_channel + power)
     )
 
-    # rates = [0x0C]  # 6mbps only for now [0x82, 0x84, 0x0b, 0x16]
+    # [0x82, 0x84, 0x0b, 0x16]
     rates = [0x82, 0x84, 0x0B, 0x16]
-    AP_RATES = bytes(rates)
+    ap_rates = bytes(rates)
 
     BEACON_IES = (
         Dot11Elt(ID="SSID", info=ssid_name)
-        / Dot11Elt(ID="Rates", info=AP_RATES)
-        / Dot11EltRates(ID=50, rates=rates)
-        / Dot11Elt(ID="DSset", info=bytes([channel]))
+        / Dot11Elt(ID="Rates", info=ap_rates)
+        / Dot11EltRates(ID="Extended Supported Rates", rates=rates)
+        / Dot11Elt(ID="DSSS Set", info=bytes([channel]))
         / country
     )
     return BEACON_IES
@@ -137,42 +144,43 @@ def if_hwaddr(iff):
     return str2mac(get_if_raw_hwaddr(iff)[1])
 
 
-def set_ip_address(dev, ip):
+def set_ip_address(dev, ip, network):
     """set_ip_address"""
     if subprocess.call(["ip", "addr", "add", ip, "dev", dev]):
-        printd("Failed to assign IP address %s to %s." % (ip, dev), Level.CRITICAL)
+        printd(f"Failed to assign IP address {ip} to {dev}.", Level.CRITICAL)
 
     if subprocess.call(
-        ["ip", "route", "add", "10.10.10.0/24", "dev", dev]
+        ["ip", "route", "add", network, "dev", dev]
     ):  # tbd parse ip and fix subnet
-        printd("Failed to assign IP route 10.10.10.0/24 to %s." % (dev), Level.CRITICAL)
+        printd(f"Failed to assign IP route {network} to {dev}.", Level.CRITICAL)
 
 
 def set_if_up(dev):
     """set_if_up"""
     if subprocess.call(["ip", "link", "set", "dev", dev, "up"]):
-        printd("Failed to bring device %s up." % dev, Level.CRITICAL)
+        printd(f"Failed to bring device {dev} up.", Level.CRITICAL)
 
 
 def set_if_addr(dev, addr):
     """set_if_addr"""
     if subprocess.call(["ip", "link", "set", "dev", dev, "addr", addr]):
-        printd("Failed to set device %s add to %s." % (dev, addr), Level.CRITICAL)
+        printd(f"Failed to set device {dev} add to {addr}.", Level.CRITICAL)
 
 
 class TunInterface(threading.Thread):
     """TunInterface"""
 
-    def __init__(self, bss, ip=None, name="scapyap"):
+    def __init__(self, bss, ip=None, network=None, name="scapyap"):
         threading.Thread.__init__(self)
 
         if len(name) > IFNAMSIZ:
-            raise Exception("Tun interface name cannot be larger than " + str(IFNAMSIZ))
+            raise Exception(f"Tun interface name cannot be larger than {IFNAMSIZ}")
 
         self.name = name
         self.daemon = True
         self.bss = bss
         self.ip = ip
+        self.network = network
 
         # Virtual interface
         self.fd = os.open("/dev/net/tun", os.O_RDWR)
@@ -185,7 +193,7 @@ class TunInterface(threading.Thread):
         set_if_addr(name, self.bss.mac)
         # Assign IP and bring interface up
         if self.ip:
-            set_ip_address(name, self.ip)
+            set_ip_address(name, self.ip, self.network)
 
         print(
             f"Created TUN interface {name} at {self.ip}. Bind it to your services if needed."
@@ -201,7 +209,7 @@ class TunInterface(threading.Thread):
             raw_packet = os.read(self.fd, DOT11_MTU)
             return raw_packet
         except Exception as e:
-            print(e)
+            print(f"An exception has occurred during 'read': {e}")
 
     def close(self):
         """close"""
@@ -267,12 +275,15 @@ class EAPOL_KEY(Packet):
     ]
 
     def extract_padding(self, s):
+        """extract_padding"""
         return s[: self.key_length], s[self.key_length :]
 
     def hashret(self):
+        """hashret"""
         return struct.pack("!B", self.type) + self.payload.hashret()
 
     def answers(self, other):
+        """answers"""
         if (
             isinstance(other, EAPOL_KEY)
             and other.descriptor_type == self.descriptor_type
@@ -282,6 +293,8 @@ class EAPOL_KEY(Packet):
 
 
 class BSS:
+    """BSS"""
+
     def __init__(self, ap, ssid, mac, psk, ip="10.10.10.1/24", mode="tunnel"):
         self.ap = ap
         self.ssid = ssid
@@ -305,7 +318,10 @@ class BSS:
         self.gen_gtk()
         if mode == "tunnel":
             # use a TUN device
-            self.network = TunInterface(self, ip="10.10.10.1")
+            ip_without_subnet = ip[0 : ip.find("/")]
+            subnet = ip[ip.find("/") + 1 :]
+            network = f'{ip[0:ip_without_subnet.rfind(".")]}.0/{subnet}'
+            self.network = TunInterface(self, ip=ip_without_subnet, network=network)
         else:
             # use a fake scapy network
             self.network = ScapyNetwork(self, ip=ip)
@@ -381,7 +397,7 @@ class AP:
             self.mac = mac
         self.boottime = time.time()
 
-        self.bssids = {mac: BSS(self, ssid, mac, psk, "10.10.0.1/24")}
+        self.bssids = {mac: BSS(self, ssid, mac, psk, "10.0.0.1/24")}
         self.beaconTransmitter = self.BeaconTransmitter(self)
 
     def ssids(self):
@@ -567,7 +583,12 @@ class AP:
         """Handle BOOTP data"""
         client_mac = packet[BOOTP].chaddr[:6]
         xid = packet[BOOTP].xid
-        client_ip = "10.0.0.2"
+
+        # Make the IP, one beyond ours
+        client_ip = self.ap_ip[0 : self.ap_ip.rfind(".")]
+        last_ip = int(self.ap_ip[self.ap_ip.rfind(".") + 1 :])
+
+        client_ip = f"{client_ip}.{last_ip+1}"
 
         if bssid is None:
             bssid = packet.getlayer(Dot11).addr1
@@ -688,15 +709,11 @@ class AP:
                     # Print a warning if we haven't already discovered this MAC
                     if not packet.addr2 is None:
                         printd(
-                            "Dropping corrupt packet from %s" % packet.addr2,
+                            f"Dropping corrupt packet from {packet.addr2}",
                             Level.BLOAT,
                         )
                     # Drop this packet
                     return
-
-            # if Dot11Beacon not in packet:
-            #     # Beacons are noisy
-            #     print(f"Incoming: {packet}")
 
             if EAPOL in packet:
                 self.create_eapol_3(packet)
@@ -707,6 +724,7 @@ class AP:
                     if bssid not in self.bssids:
                         printd("[-] Invalid bssid destination for packet")
                         return
+
                     decrypted = self.decrypt(bssid, sta, packet)
                     if decrypted:
                         # make sure that the ethernet src matches the station,
@@ -724,7 +742,8 @@ class AP:
                             decrypted
                         )  # packet from a client
                     else:
-                        printd("failed to decrypt %s to %s" % (sta, bssid))
+                        printd("[-] Failed to decrypt {sta} to {bssid}")
+
                     return
 
             if not hasattr(packet, "type"):
@@ -758,14 +777,14 @@ class AP:
                             )
                         else:
                             # otherwise return match
-                            for x in self.bssids:
+                            for _, bss in self.bssids.items():
                                 # otherwise only respond to a match
-                                if self.bssids[x].ssid == ssid:
-                                    self.dot11_probe_resp(x, packet.addr2, ssid)
+                                if bss.ssid == ssid:
+                                    self.dot11_probe_resp(bss, packet.addr2, ssid)
                                     break
+
                 elif packet.subtype == DOT11_SUBTYPE_AUTH_REQ:  # Authentication
                     bssid = packet.addr1
-                    import code
 
                     # code.interact(local=dict(globals(), **locals()))
                     if bssid in self.bssids:  # We are the receivers
@@ -781,7 +800,7 @@ class AP:
             # elif packet.type == DOT11_TYPE_CONTROL:
             #  print("control", packet.addr1)
         except SyntaxError as err:
-            printd("Unknown error at monitor interface: %s" % repr(err))
+            printd(f"Unknown error at monitor interface: {err}")
 
     def dot11_probe_resp(self, bssid, source, ssid):
         # printd("send probe response to " +  source)
