@@ -35,6 +35,10 @@ from scapy.layers.l2 import LLC, SNAP, ARP
 from scapy.layers.dhcp import BOOTP, DHCP
 from scapy.layers.dns import *
 
+# You can use this to debug SCAPY 'crashes'
+# from scapy.config import conf
+# conf.debug_dissector = 2
+
 from ccmp import *
 from fakenet import ScapyNetwork
 
@@ -61,7 +65,7 @@ def printd(string, level=Level.INFO):
 
 ### Constants
 
-# CCMP, PSK=WPA2
+# CCMP, psk=WPA2
 eRSN = Dot11EltRSN(
     ID=48,
     len=20,
@@ -127,10 +131,12 @@ TUNSETIFF = 0x400454CA
 
 
 def if_hwaddr(iff):
+    """if_hwaddr"""
     return str2mac(get_if_raw_hwaddr(iff)[1])
 
 
 def set_ip_address(dev, ip):
+    """set_ip_address"""
     if subprocess.call(["ip", "addr", "add", ip, "dev", dev]):
         printd("Failed to assign IP address %s to %s." % (ip, dev), Level.CRITICAL)
 
@@ -141,16 +147,20 @@ def set_ip_address(dev, ip):
 
 
 def set_if_up(dev):
+    """set_if_up"""
     if subprocess.call(["ip", "link", "set", "dev", dev, "up"]):
         printd("Failed to bring device %s up." % dev, Level.CRITICAL)
 
 
 def set_if_addr(dev, addr):
+    """set_if_addr"""
     if subprocess.call(["ip", "link", "set", "dev", dev, "addr", addr]):
         printd("Failed to set device %s add to %s." % (dev, addr), Level.CRITICAL)
 
 
 class TunInterface(threading.Thread):
+    """TunInterface"""
+
     def __init__(self, bss, ip=None, name="scapyap"):
         threading.Thread.__init__(self)
 
@@ -176,14 +186,15 @@ class TunInterface(threading.Thread):
             set_ip_address(name, self.ip)
 
         print(
-            "Created TUN interface %s at %s. Bind it to your services if needed."
-            % (name, self.ip)
+            f"Created TUN interface {name} at {self.ip}. Bind it to your services if needed."
         )
 
     def write(self, pkt):
+        """write"""
         os.write(self.fd, pkt.build())
 
     def read(self):
+        """read"""
         try:
             raw_packet = os.read(self.fd, DOT11_MTU)
             return raw_packet
@@ -191,9 +202,11 @@ class TunInterface(threading.Thread):
             print(e)
 
     def close(self):
+        """close"""
         os.close(self.fd)
 
     def run(self):
+        """run"""
         while True:
             raw_packet = self.read()
             sta = Ether(raw_packet).dst
@@ -201,6 +214,8 @@ class TunInterface(threading.Thread):
 
 
 class Station:
+    """Station"""
+
     def __init__(self, mac):
         self.mac = mac
         self.associated = False
@@ -209,6 +224,8 @@ class Station:
 
 # Ripped from scapy-latest with fixes
 class EAPOL_KEY(Packet):
+    """EAPOL_KEY"""
+
     name = "EAPOL_KEY"
     fields_desc = [
         ByteEnumField("key_descriptor_type", 1, {1: "RC4", 2: "RSN"}),
@@ -267,17 +284,17 @@ class BSS:
         self.ap = ap
         self.ssid = ssid
         self.mac = mac
-        self.PSK = psk
+        self.psk = psk
         self.ip = ip
         self.sc = 0
         self.aid = 0
         self.stations = {}
-        self.GTK = b""
-        self.PMK = hashlib.pbkdf2_hmac(
-            "sha1", self.PSK.encode(), self.ssid.encode(), 4096, 32
+        self.gtk = b""
+        self.pmk = hashlib.pbkdf2_hmac(
+            "sha1", self.psk.encode(), self.ssid.encode(), 4096, 32
         )
 
-        self.group_IV = count()
+        self.group_iv = count()
         self.mutex = threading.Lock()
         self.auth_times = {}
         self.assoc_times = {}
@@ -292,6 +309,7 @@ class BSS:
             self.network = ScapyNetwork(self, ip=ip)
 
     def next_sc(self):
+        """next_sc"""
         self.mutex.acquire()
         self.sc = (self.sc + 1) % 4096
         temp = self.sc
@@ -300,6 +318,7 @@ class BSS:
         return temp * 16  # Fragment number -> right 4 bits
 
     def next_aid(self):
+        """next_aid"""
         self.mutex.acquire()
         self.aid = (self.aid + 1) % 2008
         temp = self.aid
@@ -307,19 +326,34 @@ class BSS:
         return temp
 
     def gen_gtk(self):
+        """gen_gtk"""
         self.gtk_full = open("/dev/urandom", "rb").read(32)
-        self.GTK = self.gtk_full[:16]
+        self.gtk = self.gtk_full[:16]
         self.MIC_AP_TO_GROUP = self.gtk_full[16:24]
-        self.group_IV = count()
+        self.group_iv = count()
 
 
 def config_mon(iface, channel):
-    """set the interface in monitor mode and then change channel using iw"""
-    os.system("ip link set dev %s down" % iface)
-    # os.system("iw dev %s set type monitor" % iface) # this can break driver if overdone
-    os.system("ip link set dev %s up" % iface)
-    os.system("iw dev %s set channel %d" % (iface, channel))
-    pass
+    """
+    Set the interface in monitor mode and then change channel using iw
+    """
+    res = os.system(f"ip link set dev {iface} down")
+    if res != 0:
+        print("Failed to bring down the device")
+
+    res = os.system(
+        f"iw dev {iface} set type monitor"
+    )  # this can break driver if overdone
+    if res != 0:
+        print("Failed to set the device to monitor mode")
+
+    res = os.system(f"ip link set dev {iface} up")
+    if res != 0:
+        print("Failed to bring up the device")
+
+    res = os.system(f"iw dev {iface} set channel {channel}")
+    if res != 0:
+        print("Failed to set the channel")
 
 
 class AP:
@@ -420,6 +454,10 @@ class AP:
             bss = self.bssids[bssid]
 
         receiver_ip = packet[IP].src
+
+        if len(packet[DNS].qd) == 0:
+            # Not a query we can handle
+            return
 
         dns_response = (
             Ether()
@@ -768,7 +806,12 @@ class AP:
             # message_2.display()
             return
 
-        eapol_key = EAPOL_KEY(message_2.getlayer(EAPOL).payload.load)
+        eapol_payload = message_2.getlayer(EAPOL).payload
+        if isinstance(eapol_payload, Raw):
+            # In scapy 2.5 its raw - so we have 'load'
+            eapol_key = EAPOL_KEY(eapol_payload.load)
+        if isinstance(eapol_payload, scapy.layers.eap.EAPOL_KEY):
+            eapol_key = eapol_payload
 
         snonce = eapol_key.key_nonce
 
@@ -776,9 +819,9 @@ class AP:
         smac = bytes.fromhex(sta.replace(":", ""))
 
         stat = bss.stations[sta]
-        stat.PMK = PMK = bss.PMK
+        stat.pmk = pmk = bss.pmk
         # UM do we need to sort here
-        stat.PTK = PTK = customPRF512(PMK, amac, smac, stat.ANONCE, snonce)
+        stat.PTK = PTK = customPRF512(pmk, amac, smac, stat.ANONCE, snonce)
         stat.KCK = PTK[:16]
         stat.KEK = PTK[16:32]
         stat.TK = PTK[32:48]
@@ -789,7 +832,13 @@ class AP:
         # verify message 2 key mic matches before proceeding
         # verify MIC in packet makes sense
         in_eapol = message_2[EAPOL]
-        ek = EAPOL_KEY(in_eapol.payload.load)
+        eapol_payload = in_eapol.payload
+        if isinstance(eapol_payload, Raw):
+            # In scapy 2.5 its raw - so we have 'load'
+            ek = EAPOL_KEY(eapol_payload.load)
+        if isinstance(eapol_payload, scapy.layers.eap.EAPOL_KEY):
+            ek = eapol_payload
+
         given_mic = ek.key_mic
         to_check = in_eapol.build().replace(ek.key_mic, b"\x00" * len(ek.key_mic))
         computed_mic = hmac.new(stat.KCK, to_check, hashlib.sha1).digest()[:16]
@@ -799,7 +848,7 @@ class AP:
                 "[-] Invalid MIC from STA. Dropping EAPOL key exchange message and station"
             )
             printd("my bssid " + bssid)
-            printd("my psk " + bss.PSK)
+            printd("my psk " + bss.psk)
             printd("amac " + bssid)
             printd("smac " + sta)
 
@@ -807,7 +856,7 @@ class AP:
             printd(b"snonce " + binascii.hexlify(snonce))
 
             printd(b"KCK " + binascii.hexlify(stat.KCK))
-            printd(b"PMK " + binascii.hexlify(stat.PMK))
+            printd(b"pmk " + binascii.hexlify(stat.pmk))
             printd(b"PTK " + binascii.hexlify(stat.PTK))
             printd(b"given mic " + binascii.hexlify(given_mic))
             printd(b"computed mic " + binascii.hexlify(computed_mic))
@@ -828,10 +877,10 @@ class AP:
         gtk_kde = b"".join(
             [
                 chb(0xDD),
-                chb(len(bss.GTK) + 6),
+                chb(len(bss.gtk) + 6),
                 b"\x00\x0f\xac",
                 b"\x01\x00\x00",
-                bss.GTK,
+                bss.gtk,
                 b"\xdd\x00",
             ]
         )
@@ -933,7 +982,7 @@ class AP:
             printd("[-] eapol was not ready for " + sta)
             return
 
-        printd("sent eapol m1 " + sta)
+        printd("[+] Sent EAPOL m1 " + sta)
         self.sendp(stat.m1_packet, verbose=False)
 
     def dot11_assoc_resp(self, packet, sta, reassoc):
@@ -982,6 +1031,7 @@ class AP:
             self.create_message_1(bssid, sta)
 
     def decrypt(self, bssid, sta, packet):
+        """decrypt"""
         if bssid not in self.bssids:
             return
         bss = self.bssids[bssid]
@@ -998,16 +1048,17 @@ class AP:
             return None
 
         station = bss.stations[sta]
-        return self.decrypt_ccmp(packet, station.TK, bss.GTK)
+        return self.decrypt_ccmp(packet, station.TK, bss.gtk)
 
     def encrypt(self, bss, sta, packet, key_idx):
+        """encrypt"""
         key = ""
         if key_idx == 0:
             pn = next(bss.stations[sta].client_iv)
             key = bss.stations[sta].TK
         else:
-            pn = next(bss.group_IV)
-            key = bss.GTK
+            pn = next(bss.group_iv)
+            key = bss.gtk
         return self.encrypt_ccmp(bss, sta, packet, key, pn, key_idx)
 
     def enc_send(self, bss, sta, packet):
@@ -1015,7 +1066,7 @@ class AP:
         key_idx = 0
 
         if is_multicast(sta) or is_broadcast(sta):
-            if len(bss.GTK) == 0:
+            if len(bss.gtk) == 0:
                 return
             # printd("Sending broadcast/multicast")
             key_idx = 1

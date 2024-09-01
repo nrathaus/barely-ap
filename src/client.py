@@ -55,7 +55,7 @@ eRSN = Dot11EltRSN(
     nb_pairwise_cipher_suites=1,
     pairwise_cipher_suites=RSNCipherSuite(cipher="CCMP-128"),
     nb_akm_suites=1,
-    akm_suites=AKMSuite(suite="PSK"),
+    akm_suites=AKMSuite(suite="psk"),
 )
 RSN = eRSN.build()
 
@@ -141,7 +141,7 @@ class Client:
     ):
         self.mode = mode
         self.stations = {}
-        self.PSK = psk
+        self.psk = psk
         self.cur_ssid = ssid
         self.target_bssid = None
         self.iface = iface
@@ -161,7 +161,7 @@ class Client:
         self.eapol_state = 0
         self.snonce = b""
         self.anonce = b""
-        self.PMK = b""
+        self.pmk = b""
         self.PTK = b""
         self.KCK = b""
         self.KEK = b""
@@ -225,9 +225,9 @@ class Client:
 
     def gen_gtk(self):
         self.gtk_full = open("/dev/urandom", "rb").read(32)
-        self.GTK = self.gtk_full[:16]
+        self.gtk = self.gtk_full[:16]
         self.MIC_AP_TO_GROUP = self.gtk_full[16:24]
-        self.group_IV = count()
+        self.group_iv = count()
 
     def init_ptk(self, ptk=b"\x00" * 64):
         self.PTK = PTK = ptk
@@ -246,15 +246,15 @@ class Client:
             return
         self.anonce = anonce
 
-        self.PMK = hashlib.pbkdf2_hmac(
-            "sha1", self.PSK.encode(), self.get_ssid(), 4096, 32
+        self.pmk = hashlib.pbkdf2_hmac(
+            "sha1", self.psk.encode(), self.get_ssid(), 4096, 32
         )
         self.snonce = bytes([random.randrange(256) for i in range(32)])
 
         amac = bytes.fromhex(self.bssid.replace(":", ""))
         smac = bytes.fromhex(self.mac.replace(":", ""))
 
-        ptk = customPRF512(self.PMK, amac, smac, self.anonce, self.snonce)
+        ptk = customPRF512(self.pmk, amac, smac, self.anonce, self.snonce)
         self.init_ptk(ptk)
 
         header = (
@@ -312,7 +312,7 @@ class Client:
         unwrap = aes_unwrap(self.KEK, ek.key)
         RSN_info = Dot11EltRSN(unwrap)
         self.gtk_full = AKMSuite(RSN_info[6].info).load[2:]
-        self.GTK = self.gtk_full[:16]
+        self.gtk = self.gtk_full[:16]
         self.MIC_AP_TO_GROUP = self.gtk_full[16:24]
 
         header = (
@@ -445,7 +445,7 @@ class Client:
     def decrypt(self, packet):
         ccmp = packet[Dot11CCMP]
         pn = ccmp_pn(ccmp)
-        return self.decrypt_ccmp(packet, self.TK, self.GTK)
+        return self.decrypt_ccmp(packet, self.TK, self.gtk)
 
     def encrypt(self, packet, key_idx=0):
         key = ""
@@ -454,7 +454,7 @@ class Client:
             key = self.TK
         else:
             pn = next(self.group_iv)
-            key = self.GTK
+            key = self.gtk
         return self.encrypt_ccmp(packet, key, pn, key_idx)
 
     def encrypt_ccmp(self, p, tk, pn, keyid=0, amsdu_spp=False):
