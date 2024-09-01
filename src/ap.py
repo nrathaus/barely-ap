@@ -319,9 +319,9 @@ class BSS:
         if mode == "tunnel":
             # use a TUN device
             ip_without_subnet = ip[0 : ip.find("/")]
-            ip_without_last_digit = ip[0:ip_without_subnet.rfind(".")]
+            ip_without_last_digit = ip[0 : ip_without_subnet.rfind(".")]
             subnet = ip[ip.find("/") + 1 :]
-            network = f'{ip_without_last_digit}.0/{subnet}'
+            network = f"{ip_without_last_digit}.0/{subnet}"
             self.network = TunInterface(self, ip=ip_without_subnet, network=network)
         else:
             # use a fake scapy network
