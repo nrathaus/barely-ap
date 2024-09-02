@@ -391,7 +391,7 @@ class AP:
             if not mac:
                 mac = if_hwaddr(iface2)
             config_mon(iface2, channel)
-            self.sendy = conf.L2socket(iface=self.iface)
+            self.l2_socket = conf.L2socket(iface=self.iface)
         if not mac:
             raise Exception("Need a mac")
         else:
@@ -402,20 +402,26 @@ class AP:
         self.beaconTransmitter = self.BeaconTransmitter(self)
 
     def ssids(self):
+        """ssids"""
         return [self.bssids[x].ssid for x in self.bssids]
 
     def get_radiotap_header(self):
+        """get_radiotap_header"""
         return RadioTap()
 
     def get_ssid(self, mac):
+        """get_ssid"""
         if mac not in self.bssids:
             return None
+
         return self.bssids[mac].ssid
 
     def current_timestamp(self):
+        """current_timestamp"""
         return int((time.time() - self.boottime) * 1000000)
 
     def tun_data_incoming(self, bss, sta, incoming):
+        """tun_data_incoming"""
         p = Ether(incoming)
         self.enc_send(bss, sta, p)
 
@@ -692,6 +698,7 @@ class AP:
         return False
 
     def recv_pkt(self, packet):
+        """recv_pkt"""
         if hasattr(packet, "addr1"):
             a = packet.addr1
             if a != self.mac:
@@ -804,6 +811,7 @@ class AP:
             printd(f"Unknown error at monitor interface: {err}")
 
     def dot11_probe_resp(self, bssid, source, ssid):
+        """dot11_probe_resp"""
         # printd("send probe response to " +  source)
         probe_response_packet = (
             self.get_radiotap_header()
@@ -828,6 +836,7 @@ class AP:
         self.sendp(probe_response_packet, verbose=False)
 
     def dot11_auth(self, bssid, receiver):
+        """dot11_auth"""
         bss = self.bssids[bssid]
         t_now = time.time()
 
@@ -859,6 +868,7 @@ class AP:
         self.sendp(auth_packet, verbose=False)
 
     def create_eapol_3(self, message_2):
+        """create_eapol_3"""
         t_start = time.time()
         bssid = message_2.getlayer(Dot11).addr1
         sta = message_2.getlayer(Dot11).addr2
@@ -1006,6 +1016,7 @@ class AP:
         bss.stations[sta] = stat
 
     def prepare_message_1(self, bssid, sta):
+        """prepare_message_1"""
         if sta in self.bssids:
             return
 
@@ -1022,6 +1033,7 @@ class AP:
             stat.ANONCE = bytes([random.randrange(256) for i in range(32)])
             # gANONCE = bytes([random.randrange(256) for i in range(32)])
             # gANONCE = bytes([42 for i in range(32)])
+
         anonce = stat.ANONCE
         stat.m1_packet = (
             self.get_radiotap_header()
@@ -1050,6 +1062,7 @@ class AP:
         stat.eapol_ready = True
 
     def create_message_1(self, bssid, sta):
+        """create_message_1"""
         bss = self.bssids[bssid]
         stat = bss.stations[sta]
         if not stat.eapol_ready:
@@ -1197,7 +1210,7 @@ class AP:
         elif keyid == 1:
             tk = gtk
         else:
-            raise Exception("unknown key id", keyid)
+            raise Exception(f"Unknown key id: {keyid}")
 
         priority = dot11_get_priority(p)
         pn = dot11_get_iv(p)
@@ -1270,8 +1283,8 @@ class AP:
     def run(self):
         """run"""
         self.beaconTransmitter.start()
-        for x in self.bssids:
-            self.bssids[x].network.start()
+        for _, bss in self.bssids.items():
+            bss.network.start()
 
         # in iface node, an interface in monitor mode is used
         # in stdio node, I/O is done via stdin and stdout.
@@ -1296,6 +1309,7 @@ class AP:
                     qdata = qdata[4 + wanted :]
 
     def sendp(self, packet, verbose=False):
+        """Sendp wrapper"""
         if self.mode == "stdio":
             x = packet.build()
             sys.stdout.buffer.write(struct.pack("<L", len(x)) + x)
@@ -1304,7 +1318,7 @@ class AP:
         assert self.mode == "iface"
         # sendp(packet, iface=self.iface, verbose=False)
         # L2 sock is faster
-        self.sendy.send(packet)
+        self.l2_socket.send(packet)
 
 
 if __name__ == "__main__":
