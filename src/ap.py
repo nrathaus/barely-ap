@@ -141,7 +141,12 @@ TUNSETIFF = 0x400454CA
 
 def if_hwaddr(iff):
     """if_hwaddr"""
-    return str2mac(get_if_raw_hwaddr(iff)[1])
+    try:
+        device = get_if_raw_hwaddr(iff)
+    except OSError:
+        return None
+
+    return str2mac(device[1])
 
 
 def set_ip_address(dev, ip, network):
@@ -390,6 +395,9 @@ class AP:
         if self.mode == "iface":
             if not mac:
                 mac = if_hwaddr(iface2)
+                if mac is None:
+                    raise Exception(f"Network device {iface2} not found")
+
             config_mon(iface2, channel)
             self.l2_socket = conf.L2socket(iface=self.iface)
         if not mac:
